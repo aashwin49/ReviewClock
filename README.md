@@ -1,0 +1,3 @@
+# ReviewClock
+
+ReviewClock is a live pull-request review tracker designed to eliminate review problems. It listens to GitHub webhooks, computes who each pull request is waiting on, and displays them on a real-time board. It uses Node.js, Express, MongoDB, and Server-Sent Events to stream state updates without page refreshes. The system handles duplicate deliveries safely via unique indexing and processes events asynchronously from an inbox collection. It serves as a portfolio project proving robust event-driven backend engineering.
