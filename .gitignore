@@ -9,3 +9,12 @@ node_modules/
 # OS / editor junk
 .DS_Store
 .vscode/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Build output (your client/ folder will need this)
+dist/
+build/
+coverage/
