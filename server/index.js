@@ -55,7 +55,7 @@ app.post('/hooks/github/:sourceId', async (req, res) => {
   try {
     await Delivery.create({
       sourceId,
-      deliveryId,
+      deliveryID:deliveryId,
       event,
       rawPayload: req.body
     });
@@ -73,12 +73,10 @@ app.post('/hooks/github/:sourceId', async (req, res) => {
     console.error(error);
     return res.status(500).send('Internal Server Error');
   }
+
 });
 
-// Send a 202 status back so GitHub knows we received it successfully
-res.status(202).send('Accepted');
 
-
-app.listen(process.env.port || 3000, ()=>{
+app.listen(process.env.PORT || 3000, ()=>{
     console.log(`ReviewClock secure server running on port ${process.env.PORT || 3000}`);
 });
