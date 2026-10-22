@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 require('dotenv').config();
 
 const Delivery = require('./models/Delivery');
+const PullRequest = require('./models/PullRequest')
 
 const app=express()
 
@@ -73,9 +74,30 @@ app.post('/hooks/github/:sourceId', async (req, res) => {
     console.error(error);
     return res.status(500).send('Internal Server Error');
   }
-
+  
 });
+// API endpoint to fetch derived PR states for the dashboard
+  app.get('/api/pull-requests/:sourceId', async(req,res)=>{
+    try{
+      const {sourceId} = req.params;  //Object destructuring similar to writing const sourceId = req.params.sourceId;
 
+      const prs = (await PullRequest.find({sourceId})).sort({updatedAt:-1});  //-1: newest updates shown first
+
+      return res.status(200).json({
+        success:true,
+        count: prs.length,
+        data:prs
+      });
+    }
+    catch(error){
+      console.error('Error fetching pull requests:', error);
+
+      return res.status(500).json({
+      success: false,
+      error: 'Internal Server Error'
+    });
+  }
+  });
 
 app.listen(process.env.PORT || 3000, ()=>{
     console.log(`ReviewClock secure server running on port ${process.env.PORT || 3000}`);
