@@ -1,120 +1,72 @@
-// This script runs continuously, pulls unprocessed raw webhooks from MongoDB, interprets them, and updates your PullRequests table.
+// server/worker.js
 const mongoose = require('mongoose');
 require('dotenv').config();
 
 const Delivery = require('./models/Delivery');
 const PullRequest = require('./models/PullRequest');
+const { applyEvent, derive } = require('./logic/prState'); // Added this import
 
-async function startWorker() {
-  await mongoose.connect(process.env.MONGODB_URI);
-  console.log('ReviewClock background worker started...');
-}
-
-// Polling the inbox every 3 seconds
-setInterval(async () => {
-  let delivery;
-
+async function processDelivery(delivery) {
+  if (!delivery) throw new Error('A delivery is required');
   try {
-    // Atomically grab one unprocessed delivery and mark it as 'processing'
-    delivery = await Delivery.findOneAndUpdate(
-      { status: 'received' },
-      { $set: { status: 'processing' } },
-      { returnDocument: 'after' }
-    );
-
-    if (!delivery) return;
-
-    console.log(`Processing delivery: ${delivery.deliveryID} (${delivery.event})`);
-
     const payload = delivery.rawPayload;
+    const pr = payload?.pull_request;
+    const repo = payload?.repository?.full_name;
+    if (!repo || !pr?.number) throw new Error('Delivery is missing repository or pull request data');
 
-    // Handle pull_request_review events
-    if (delivery.event === 'pull_request_review') {
-      const repo = payload.repository.full_name;
-      const pr = payload.pull_request;
-      const reviewAction = payload.review.state;
+    const prNumber = pr.number;
+    let prDoc = await PullRequest.findOne({ sourceId: delivery.sourceId, repo, prNumber });
+    if (!prDoc) prDoc = new PullRequest({ sourceId: delivery.sourceId, repo, prNumber });
 
-      let reviewStatus;
+    const nextFacts = applyEvent(prDoc.facts || {}, delivery.event, payload);
+    const prKey = `${repo}#${prNumber}`;
+    const derivedPR = derive(nextFacts)[prKey];
+    if (!derivedPR) throw new Error(`Could not derive state for PR ${prKey}`);
 
-      switch (reviewAction) {
-        case 'approved':
-          reviewStatus = 'approved';
-          break;
-        case 'changes_requested':
-          reviewStatus = 'changes_requested';
-          break;
-        case 'commented':
-          reviewStatus = 'commented';
-          break;
-        case 'pending':
-          reviewStatus = 'pending';
-          break;
-        case 'dismissed':
-          reviewStatus = 'dismissed';
-          break;
-        default:
-          console.warn(`Unknown review state: ${reviewAction}`);
-          return;
-      }
+    prDoc.title = pr.title;
+    prDoc.author = pr.user?.login;
+    prDoc.state = derivedPR.state;
+    prDoc.reviewStatus = derivedPR.reviewStatus;
+    prDoc.facts = nextFacts;
+    prDoc.derived = { state: derivedPR.displayState, reviewStatus: derivedPR.reviewStatus };
+    prDoc.updatedAt = new Date();
+    prDoc.markModified('facts');
+    prDoc.markModified('derived');
+    await prDoc.save();
 
-      const updatedPR = await PullRequest.findOneAndUpdate(
-        {
-          sourceId: delivery.sourceId,
-          repo,
-          prNumber: pr.number
-        },
-        {
-          $set: {
-            reviewStatus,
-            updatedAt: new Date()
-          }
-        },
-        { returnDocument: 'after' }
-      );
-
-      if (updatedPR) {
-        console.log(`Updated review status for PR #${pr.number} to: ${reviewStatus}`);
-      } else {
-        console.warn(`PR #${pr.number} was not found in the database.`);
-      }
-
-    } else if (delivery.event === 'pull_request') {
-      // Handle standard pull_request lifecycle events (opened, synchronized, closed, etc.)
-      const repo = payload.repository.full_name;
-      const pr = payload.pull_request;
-      const state = pr.state; // e.g., 'open', 'closed'
-
-      const updatedPR = await PullRequest.findOneAndUpdate(
-        {
-          sourceId: delivery.sourceId,
-          repo,
-          prNumber: pr.number
-        },
-        {
-          $set: {
-            title: pr.title,
-            author: pr.user.login,
-            state,
-            updatedAt: new Date()
-          }
-        },
-        { upsert: true, returnDocument: 'after' }
-      );
-
-      console.log(`Upserted PR #${pr.number} state: ${state}`);
-    }
-
-    // Mark delivery as successfully processed
     delivery.status = 'processed';
     await delivery.save();
-
-    console.log(`Successfully processed delivery: ${delivery.deliveryID}`);
-
-  } catch (err) {
-    console.error('Error in worker loop:', err);
+    return prDoc;
+  } catch (error) {
+    delivery.status = 'failed';
+    delivery.error = error.message;
+    await delivery.save();
+    throw error;
   }
-}, 3000);
+}
 
-startWorker();
+async function processNextDelivery() {
+  const delivery = await Delivery.findOneAndUpdate(
+    { status: 'received' },
+    { $set: { status: 'processing' } },
+    { returnDocument: 'after' }
+  );
+  return delivery ? processDelivery(delivery) : null;
+}
 
-// Main idea: Delivery tracks incoming webhook events, while PullRequest stores the latest PR information. dont change aniline just fix error
+async function startWorker({ pollIntervalMs = 3000 } = {}) {
+  await mongoose.connect(process.env.MONGODB_URI);
+  console.log('ReviewClock background worker started...');
+  return setInterval(() => {
+    processNextDelivery().catch(error => console.error('Error in worker loop:', error));
+  }, pollIntervalMs);
+}
+
+if (require.main === module) {
+  startWorker().catch(error => {
+    console.error('Could not start ReviewClock worker:', error);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { processDelivery, processNextDelivery, startWorker };

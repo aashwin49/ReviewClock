@@ -10,7 +10,9 @@ const pullRqstSchema = new mongoose.Schema(
         author: { type: String, required: true },
         state: { type: String, default: 'open' }, // 'open', 'closed', 'merged'
         reviewStatus: { type: String, default: 'pending' },
-        updatedAt: { type: Date, default: Date.now }
+        updatedAt: { type: Date, default: Date.now },
+        facts: {type: mongoose.Schema.Types.Mixed, default: {}},
+        derived: {type: mongoose.Schema.Types.Mixed, default: {}}
     }
 );
 

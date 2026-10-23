@@ -8,7 +8,8 @@
   },
   "scripts": {
     "start": "node server/index.js",
-    "dev": "nodemon server/index.js"
+    "dev": "nodemon server/index.js",
+    "test": "vitest"
   },
   "repository": {
     "type": "git",
@@ -26,5 +27,8 @@
     "dotenv": "^18.0.6",
     "express": "^5.2.1",
     "mongoose": "^9.11.1"
+  },
+  "devDependencies": {
+    "vitest": "^5.0.5"
   }
 }
