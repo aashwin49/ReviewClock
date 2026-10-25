@@ -130,21 +130,164 @@ router.delete('/api/sources/:id', requireAuth, async (req, res, next) => {
   } catch (error) { return next(error); }
 });
 
+function parsePage(query) {
+  const page = Number(query.page || 1);
+  const limit = Number(query.limit || 25);
+  if (!Number.isInteger(page) || page < 1 || !Number.isInteger(limit) || limit < 1 || limit > 100) return null;
+  return { page, limit, skip: (page - 1) * limit };
+}
+
+async function ownedSourceIds(userId) {
+  const sources = await Source.find({ userId }).select('_id');
+  return sources.map(source => String(source._id));
+}
+
+router.get('/api/prs', requireAuth, async (req, res, next) => {
+  try {
+    const paging = parsePage(req.query);
+    if (!paging) return res.status(400).json({ success: false, error: 'page must be positive and limit must be between 1 and 100' });
+    const sourceParam = req.query.source || req.query.sourceId;
+    let sourceIds;
+    if (sourceParam) {
+      const source = await Source.findOne({ _id: sourceParam, userId: req.user._id }).select('_id');
+      if (!source) return res.status(404).json({ success: false, error: 'Source not found' });
+      sourceIds = [String(source._id)];
+    } else {
+      sourceIds = await ownedSourceIds(req.user._id);
+    }
+
+    const filter = { sourceId: { $in: sourceIds } };
+    if (req.query.state) {
+      const allowedStates = ['Draft', 'Awaiting review', 'Changes requested', 'Approved', 'Merged', 'Closed'];
+      if (!allowedStates.includes(req.query.state)) return res.status(400).json({ success: false, error: 'Unsupported state filter' });
+      filter['derived.state'] = req.query.state;
+    }
+    if (req.query.stalled !== undefined) {
+      if (!['true', 'false'].includes(req.query.stalled)) return res.status(400).json({ success: false, error: 'stalled must be true or false' });
+      filter['derived.stalled'] = req.query.stalled === 'true';
+    }
+
+    const [total, prs] = await Promise.all([
+      PullRequest.countDocuments(filter),
+      PullRequest.find(filter).sort({ updatedAt: -1, _id: 1 }).skip(paging.skip).limit(paging.limit)
+    ]);
+    return res.json({
+      success: true,
+      data: prs,
+      pagination: { page: paging.page, limit: paging.limit, total, pages: Math.ceil(total / paging.limit) }
+    });
+  } catch (error) { return next(error); }
+});
+
+router.get('/api/prs/:id', requireAuth, async (req, res, next) => {
+  try {
+    const sourceIds = await ownedSourceIds(req.user._id);
+    const pr = await PullRequest.findOne({ _id: req.params.id, sourceId: { $in: sourceIds } });
+    if (!pr) return res.status(404).json({ success: false, error: 'Pull request not found' });
+
+    const deliveries = await Delivery.find({
+      sourceId: pr.sourceId,
+      $or: [
+        { 'rawPayload.pull_request.number': pr.prNumber },
+        { 'rawPayload.number': pr.prNumber }
+      ]
+    }).sort({ receivedAt: 1 }).limit(500).select('+rawPayload');
+
+    const timeline = deliveries.map(delivery => {
+      const payload = delivery.rawPayload || {};
+      const review = payload.review || {};
+      const action = payload.action || delivery.event;
+      return {
+        deliveryId: delivery.deliveryID,
+        event: delivery.event,
+        action,
+        actor: review.user?.login || payload.sender?.login || null,
+        at: review.submitted_at || payload.pull_request?.updated_at || delivery.receivedAt,
+        status: delivery.status,
+        summary: delivery.event === 'pull_request_review'
+          ? `${review.user?.login || 'A reviewer'} ${review.state || action} review`
+          : `Pull request ${action}`
+      };
+    }).sort((left, right) => new Date(left.at) - new Date(right.at));
+
+    const verdictByReviewer = new Map();
+    for (const delivery of deliveries) {
+      if (delivery.event !== 'pull_request_review') continue;
+      const review = delivery.rawPayload?.review || {};
+      const reviewer = review.user?.login;
+      if (!reviewer) continue;
+      const action = delivery.rawPayload?.action;
+      const verdict = action === 'dismissed' ? 'dismissed' : String(review.state || '').toLowerCase();
+      // A plain comment does not replace that reviewer's most recent verdict.
+      if (!['approved', 'changes_requested', 'dismissed'].includes(verdict)) continue;
+      const timestamp = new Date(review.submitted_at || delivery.receivedAt).getTime();
+      const prior = verdictByReviewer.get(reviewer);
+      if (!prior || timestamp >= prior.timestamp) {
+        verdictByReviewer.set(reviewer, { reviewer, verdict, submittedAt: new Date(timestamp), timestamp });
+      }
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        pullRequest: pr,
+        timeline,
+        reviewerVerdicts: [...verdictByReviewer.values()].map(({ timestamp, ...verdict }) => verdict)
+      }
+    });
+  } catch (error) { return next(error); }
+});
+
+router.get('/api/sources/:id/deliveries', requireAuth, async (req, res, next) => {
+  try {
+    const paging = parsePage(req.query);
+    if (!paging) return res.status(400).json({ success: false, error: 'page must be positive and limit must be between 1 and 100' });
+    const source = await Source.findOne({ _id: req.params.id, userId: req.user._id }).select('_id');
+    if (!source) return res.status(404).json({ success: false, error: 'Source not found' });
+    const filter = { sourceId: String(source._id) };
+    const allowedStatuses = ['received', 'processing', 'processed', 'failed'];
+    if (req.query.status) {
+      if (!allowedStatuses.includes(req.query.status)) return res.status(400).json({ success: false, error: 'Unsupported delivery status filter' });
+      filter.status = req.query.status;
+    }
+    const [total, deliveries] = await Promise.all([
+      Delivery.countDocuments(filter),
+      Delivery.find(filter).sort({ receivedAt: -1, _id: -1 }).skip(paging.skip).limit(paging.limit).select('-rawPayload')
+    ]);
+    return res.json({
+      success: true,
+      data: deliveries,
+      pagination: { page: paging.page, limit: paging.limit, total, pages: Math.ceil(total / paging.limit) }
+    });
+  } catch (error) { return next(error); }
+});
+
+router.get('/api/stats', requireAuth, async (req, res, next) => {
+  try {
+    const sourceIds = await ownedSourceIds(req.user._id);
+    const groups = await PullRequest.aggregate([
+      { $match: { sourceId: { $in: sourceIds } } },
+      { $group: { _id: '$derived.state', count: { $sum: 1 } } }
+    ]);
+    const byState = Object.fromEntries(groups.map(group => [group._id || 'Unknown', group.count]));
+    const total = groups.reduce((sum, group) => sum + group.count, 0);
+    return res.json({
+      success: true,
+      data: {
+        total,
+        byState,
+        stalled: await PullRequest.countDocuments({ sourceId: { $in: sourceIds }, 'derived.stalled': true })
+      }
+    });
+  } catch (error) { return next(error); }
+});
+
 router.get('/api/pull-requests/:sourceId', requireAuth, async (req, res, next) => {
   try {
     const source = await Source.findOne({ _id: req.params.sourceId, userId: req.user._id }).select('_id');
     if (!source) return res.status(404).json({ success: false, error: 'Source not found' });
     const prs = await PullRequest.find({ sourceId: String(source._id) }).sort({ updatedAt: -1 });
     return res.json({ success: true, count: prs.length, data: prs });
-  } catch (error) { return next(error); }
-});
-
-router.get('/api/sources/:id/deliveries', requireAuth, async (req, res, next) => {
-  try {
-    const source = await Source.findOne({ _id: req.params.id, userId: req.user._id }).select('_id');
-    if (!source) return res.status(404).json({ success: false, error: 'Source not found' });
-    const deliveries = await Delivery.find({ sourceId: String(source._id) }).sort({ receivedAt: -1 }).limit(100).select('-rawPayload');
-    return res.json({ success: true, data: deliveries });
   } catch (error) { return next(error); }
 });
 
