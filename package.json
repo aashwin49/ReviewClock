@@ -1,0 +1,34 @@
+{
+  "name": "reviewclock",
+  "version": "1.0.0",
+  "description": "ReviewClock is a live pull-request review tracker designed to eliminate review problems. It listens to GitHub webhooks, computes who each pull request is waiting on, and displays them on a real-time board. It uses Node.js, Express, MongoDB, and Server-Sent Events to stream state updates without page refreshes. The system handles duplicate deliveries safely via unique indexing and processes events asynchronously from an inbox collection. It serves as a portfolio project proving robust event-driven backend engineering.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "nodemon server/index.js",
+    "test": "vitest"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aashwin49/ReviewClock.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/aashwin49/ReviewClock/issues"
+  },
+  "homepage": "https://github.com/aashwin49/ReviewClock#readme",
+  "dependencies": {
+    "dotenv": "^18.0.6",
+    "express": "^5.2.1",
+    "mongoose": "^9.11.1"
+  },
+  "devDependencies": {
+    "vitest": "^5.0.5"
+  }
+}

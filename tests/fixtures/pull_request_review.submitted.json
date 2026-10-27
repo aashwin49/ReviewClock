@@ -1,0 +1,24 @@
+{
+  "action": "submitted",
+  "repository": {
+    "full_name": "example/repo"
+  },
+  "pull_request": {
+    "number": 1,
+    "title": "Add a new feature",
+    "state": "open",
+    "merged": false,
+    "updated_at": "2026-10-20T10:10:00Z",
+    "user": {
+      "login": "test-user"
+    }
+  },
+  "review": {
+    "id": 101,
+    "state": "approved",
+    "submitted_at": "2026-10-20T10:10:00Z",
+    "user": {
+      "login": "reviewer"
+    }
+  }
+}
