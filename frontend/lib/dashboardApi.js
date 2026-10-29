@@ -37,7 +37,7 @@ async function request(path, options = {}) {
   } finally { clearTimeout(timer); options.signal?.removeEventListener('abort', abortFromCaller); }
 }
 const unwrap = value => value?.data ?? value;
-const mapSource = raw => ({ id: raw.id || raw._id, repo: raw.repo || raw.repoFullName, webhookUrl: raw.webhookUrl, secret: raw.secret, status: raw.status || 'waiting' });
+const mapSource = raw => ({ id: raw.id || raw._id, repo: raw.repo || raw.repoFullName, webhookUrl: raw.webhookUrl, secret: raw.secret, status: raw.status || 'waiting', stalledThresholdMinutes: raw.stalledThresholdMinutes || 1440 });
 function publicWebhookUrl(value) {
   if (!value || !WEBHOOK_BASE) return value;
   try {
@@ -52,7 +52,7 @@ function publicWebhookUrl(value) {
   return value;
 }
 const PR_STATES = { Draft: 'draft', 'Awaiting review': 'awaiting_review', 'Changes requested': 'changes_requested', Approved: 'approved', Merged: 'merged' };
-const mapPR = raw => ({ id: String(raw.id || raw._id || ''), number: raw.number ?? raw.prNumber, title: raw.title || 'Untitled pull request', summary: raw.summary || raw.facts?.summary || '', author: typeof raw.author === 'string' ? { login: raw.author } : raw.author || { login: 'Unknown' }, state: PR_STATES[raw.displayState || raw.derived?.state] || raw.state || 'awaiting_review', waitingOn: raw.derived?.waitingOn || raw.waitingOn, waitingSince: raw.derived?.waitingSince || raw.waitingSince || raw.updatedAt, stalled: Boolean(raw.derived?.stalled ?? raw.stalled) });
+const mapPR = raw => ({ id: String(raw.id || raw._id || ''), sourceId: raw.sourceId, number: raw.number ?? raw.prNumber, title: raw.title || 'Untitled pull request', summary: raw.summary || raw.facts?.summary || '', author: typeof raw.author === 'string' ? { login: raw.author } : raw.author || { login: 'Unknown' }, state: PR_STATES[raw.displayState || raw.derived?.state] || raw.state || 'awaiting_review', waitingOn: raw.derived?.waitingOn || raw.waitingOn, waitingSince: raw.derived?.waitingSince || raw.waitingSince || raw.updatedAt, stalled: Boolean(raw.derived?.stalled ?? raw.stalled), readyAt: raw.readyAt, firstReviewAt: raw.firstReviewAt });
 const mapDelivery = raw => ({ id: String(raw.id || raw._id), deliveryId: raw.deliveryId || raw.deliveryID, event: raw.event, status: raw.status === 'duplicate' ? 'duplicate' : raw.status, receivedAt: raw.receivedAt, signatureVerified: raw.signatureVerified ?? null });
 async function getPages(path, signal) {
   const results = [];
@@ -97,6 +97,7 @@ export const api = {
     return mapSource({ ...unwrap(result), webhookUrl: publicWebhookUrl(result.connect?.payloadUrl), secret: result.connect?.secret });
   },
   async source(id, signal) { if (MOCK) return { id, repo: 'aashwin49/ReviewClock', status: 'waiting' }; return mapSource(await request(`/api/sources/${encodeURIComponent(id)}`, { signal }).then(unwrap)); },
+  async updateSource(id, stalledThresholdMinutes) { return mapSource(unwrap(await request(`/api/sources/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ stalledThresholdMinutes }) }))); },
   async prs(signal) { if (MOCK) return mockPRs; return (await getPages('/api/prs', signal)).filter(raw => (raw.displayState || raw.derived?.state) !== 'Closed').map(mapPR); },
   async pr(number, signal) {
     if (MOCK) return mockPRs.find(pr => pr.number === Number(number)) ? { pr: mockPRs.find(pr => pr.number === Number(number)), verdicts: [], events: [] } : null;
@@ -115,7 +116,11 @@ export const api = {
   async reprocess(id) {
     if (MOCK) throw new ApiError('Retry is unavailable in fixture mode.', 404);
     return unwrap(await request(`/api/deliveries/${encodeURIComponent(id)}/reprocess`, { method: 'POST' }));
-  }
+  },
+  async streamTicket() {
+    return request('/api/stream-ticket', { method: 'POST', body: '{}' });
+  },
+  streamUrl(ticket) { return `${API_BASE}/api/stream?ticket=${encodeURIComponent(ticket)}`; }
 };
 function mapEvent(e) {
   if (e.event === 'pull_request_review') {

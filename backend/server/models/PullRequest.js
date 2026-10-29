@@ -11,6 +11,10 @@ const pullRqstSchema = new mongoose.Schema(
         state: { type: String, default: 'open' }, // 'open', 'closed', 'merged'
         reviewStatus: { type: String, default: 'pending' },
         updatedAt: { type: Date, default: Date.now },
+        waitingSince: { type: Date, default: null },
+        stalledForSince: { type: Date, default: null },
+        readyAt: { type: Date, default: null },
+        firstReviewAt: { type: Date, default: null },
         facts: {type: mongoose.Schema.Types.Mixed, default: {}},
         derived: {type: mongoose.Schema.Types.Mixed, default: {}}
     }

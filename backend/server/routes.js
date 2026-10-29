@@ -5,6 +5,7 @@ const Source = require('./models/Source');
 const Delivery = require('./models/Delivery');
 const PullRequest = require('./models/PullRequest');
 const { hashPassword, verifyPassword, signToken, requireAuth } = require('./auth');
+const { issueTicket, takeTicket, createSession, userForSession, connectStream } = require('./streamHub');
 
 const router = express.Router();
 const CONNECT_EVENTS = ['Pull requests', 'Pull request reviews'];
@@ -50,6 +51,36 @@ router.post('/api/auth/login', async (req, res, next) => {
 });
 
 router.get('/api/me', requireAuth, (req, res) => res.json({ success: true, user: { id: String(req.user._id), email: req.user.email } }));
+
+router.post('/api/stream-ticket', requireAuth, (req, res) => {
+  return res.status(201).json({ success: true, ticket: issueTicket(req.user._id), expiresIn: 60 });
+});
+
+router.get('/api/stream', async (req, res, next) => {
+  try {
+    let userId = null;
+    if (typeof req.query.ticket === 'string') {
+      userId = takeTicket(req.query.ticket);
+      if (userId) {
+        const session = createSession(userId);
+        const secure = req.secure || req.get('x-forwarded-proto') === 'https';
+        res.cookie('reviewclockStream', session, {
+          httpOnly: true, sameSite: 'strict', secure, path: '/api/stream',
+          maxAge: 7 * 24 * 60 * 60 * 1000
+        });
+      }
+    }
+    if (!userId) {
+      const cookies = Object.fromEntries(String(req.get('cookie') || '').split(';').map(part => {
+        const split = part.trim().indexOf('=');
+        return split < 0 ? ['', ''] : [part.trim().slice(0, split), decodeURIComponent(part.trim().slice(split + 1))];
+      }));
+      userId = userForSession(cookies.reviewclockStream);
+    }
+    if (!userId) return res.status(401).json({ success: false, error: 'A valid stream ticket is required' });
+    await connectStream(req, res, userId);
+  } catch (error) { return next(error); }
+});
 
 router.get('/api/sources', requireAuth, async (req, res, next) => {
   try {
@@ -259,6 +290,19 @@ router.get('/api/sources/:id/deliveries', requireAuth, async (req, res, next) =>
       data: deliveries,
       pagination: { page: paging.page, limit: paging.limit, total, pages: Math.ceil(total / paging.limit) }
     });
+  } catch (error) { return next(error); }
+});
+
+router.post('/api/deliveries/:id/reprocess', requireAuth, async (req, res, next) => {
+  try {
+    const sourceIds = await ownedSourceIds(req.user._id);
+    const delivery = await Delivery.findOneAndUpdate(
+      { _id: req.params.id, sourceId: { $in: sourceIds }, status: 'failed' },
+      { $set: { status: 'received' }, $unset: { error: 1 } },
+      { new: true }
+    ).select('-rawPayload');
+    if (!delivery) return res.status(404).json({ success: false, error: 'Failed delivery not found' });
+    return res.json({ success: true, data: delivery });
   } catch (error) { return next(error); }
 });
 

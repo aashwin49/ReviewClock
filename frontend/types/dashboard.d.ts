@@ -19,6 +19,9 @@ export interface PullRequest {
   waitingOn?: string;
   waitingSince?: string;
   stalled: boolean;
+  readyAt?: string;
+  firstReviewAt?: string;
+  sourceId?: string;
 }
 
 export interface Verdict {

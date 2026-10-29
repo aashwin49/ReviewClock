@@ -6,6 +6,8 @@ require('dotenv').config();
 const Delivery = require('./models/Delivery');
 const Source = require('./models/Source');
 const { router } = require('./routes');
+const { startActivityPoller } = require('./streamHub');
+const { processNextDelivery } = require('./worker');
 
 const app = express();
 app.use(express.json({
@@ -38,6 +40,7 @@ app.post('/hooks/github/:endpointId', async (req, res, next) => {
       return res.status(202).send('Ping accepted');
     }
 
+    let inserted = false;
     try {
       await Delivery.create({
         sourceId: String(source._id),
@@ -45,10 +48,12 @@ app.post('/hooks/github/:endpointId', async (req, res, next) => {
         event,
         rawPayload: req.body
       });
+      inserted = true;
     } catch (error) {
       if (error.code !== 11000) throw error;
     }
     await Source.updateOne({ _id: source._id }, { $set: { lastDeliveryAt: new Date() } });
+    if (inserted) setImmediate(() => processNextDelivery().catch(error => console.error('Could not process webhook delivery:', error.message)));
     return res.status(202).send('Accepted');
   } catch (error) { return next(error); }
 });
@@ -71,6 +76,7 @@ async function start() {
     throw new Error('JWT_SECRET must be configured with at least 32 characters');
   }
   await mongoose.connect(process.env.MONGODB_URI);
+  startActivityPoller();
   const port = Number(process.env.PORT) || 3000;
   return app.listen(port, () => console.log(`ReviewClock server listening on port ${port}`));
 }

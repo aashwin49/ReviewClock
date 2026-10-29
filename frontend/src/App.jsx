@@ -37,6 +37,15 @@ function AgeChip({ pr }) {
   return <StatusChip status="rose">{elapsed}h waiting</StatusChip>;
 }
 
+function durationLabel(start, end) {
+  if (!start || !end) return null;
+  const totalMinutes = Math.max(0, Math.floor((new Date(end).getTime() - new Date(start).getTime()) / 60000));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  return [days ? `${days}d` : '', hours ? `${hours}h` : '', `${minutes}m`].filter(Boolean).join(' ');
+}
+
 function PRCard({ pr, navigate }) {
   const author = pr.author?.login || 'Unknown author';
   const waiting = pr.state === 'changes_requested' ? 'Waiting on author' : pr.waitingOn ? `Waiting on @${pr.waitingOn}` : pr.state === 'draft' ? 'Draft' : 'Waiting on reviewer';
@@ -44,6 +53,7 @@ function PRCard({ pr, navigate }) {
     <div className="card-top"><span className="pr-number">#{pr.number}</span><AgeChip pr={pr} /></div>
     <h3>{esc(pr.title)}</h3>{pr.summary && <p className="pr-summary">{esc(pr.summary)}</p>}
     <div className="card-footer"><span className="author"><Avatar name={author} tiny />{author}</span><span className="waiting">{waiting}</span></div>
+    {pr.state === 'merged' && pr.firstReviewAt && <div className="first-review">First review in <b>{durationLabel(pr.readyAt || pr.createdAt, pr.firstReviewAt) || '—'}</b></div>}
   </a>;
 }
 
@@ -71,25 +81,28 @@ function ThemeSwitch() {
   return <button className="icon-button" aria-label="Switch theme" onClick={() => setTheme(value => { const next = value === 'dark' ? 'light' : 'dark'; localStorage.setItem('reviewclock-theme', next); return next; })}><Icon name={theme === 'dark' ? 'moon' : 'sun'} size={16} /></button>;
 }
 
-function TopBar({ navigate, search, setSearch, repoName }) {
+function TopBar({ navigate, search, setSearch, repoName, liveStatus }) {
   const [menuOpen, setMenuOpen] = useState(false);
   return <header className="topbar"><button className="icon-button mobile-menu" aria-label="Open navigation" aria-expanded={menuOpen} onClick={() => setMenuOpen(v => !v)}><Icon name="menu" size={16} /></button>
     <div className="mobile-brand"><span className="brand-mark"><Icon name="clock" size={18} /></span><b>ReviewClock</b></div>
     <div className="identity"><Avatar name="A"/><span><b>{login}</b><small>{repoName || 'No repository connected'}</small></span><span className="chev">⌄</span></div>
     <label className="search"><span><Icon name="search" size={16} /></span><input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search PRs, authors, delivery IDs…" aria-label="Search pull requests, authors, delivery IDs" /></label>
-    <div className="connection"><i></i><b>Offline</b><span>Not connected</span></div><ThemeSwitch /><span className="user-avatar">A</span>
+    <div className={`connection ${liveStatus}`} aria-live="polite"><i></i><b>{liveStatus === 'live' ? 'Live' : liveStatus === 'reconnecting' ? 'Reconnecting' : 'Offline'}</b><span>{liveStatus === 'live' ? 'Updates enabled' : 'Waiting for connection'}</span></div><ThemeSwitch /><span className="user-avatar">A</span>
     {menuOpen && <div className="mobile-nav"><Sidebar active={getRoute() === '/dashboard/deliveries' ? 'deliveries' : 'board'} deliveries={[]} navigate={path => { setMenuOpen(false); navigate(path); }} /></div>}
   </header>;
 }
 
-function AppShell({ children, active, deliveries, navigate, search, setSearch, repoName }) {
-  return <div className="ambient"><div className="frame"><Sidebar active={active} deliveries={deliveries} navigate={navigate} /><div className="workspace"><TopBar navigate={navigate} search={search} setSearch={setSearch} repoName={repoName} /><main className="main">{children}</main></div></div></div>;
+function AppShell({ children, active, deliveries, navigate, search, setSearch, repoName, liveStatus }) {
+  return <div className="ambient"><div className="frame"><Sidebar active={active} deliveries={deliveries} navigate={navigate} /><div className="workspace"><TopBar navigate={navigate} search={search} setSearch={setSearch} repoName={repoName} liveStatus={liveStatus} /><main className="main">{children}</main></div></div></div>;
 }
 
 function PageHeader({ kicker, title, summary, action }) { return <div className="page-header"><div><div className="eyebrow">{kicker}</div><h1>{title}</h1><p className="subtitle">{summary}</p></div>{action}</div>; }
 function SkeletonBoard() { return <div className="board-scroll"><div className="board-columns">{STATES.map(state => <section className="column" key={state}><header className="column-heading"><span className={`dot dot-${state}`} /><b>{LABELS[state]}</b><span className="count">—</span></header><div className="skeleton"/><div className="skeleton"/></section>)}</div></div>; }
 
-function Board({ prs, loading, error, onRetry, view, setView, navigate, search }) {
+function Board({ prs, loading, error, onRetry, view, setView, navigate, search, sources, selectedSourceId, onSelectSource, onThresholdChange }) {
+  const selectedSource = sources.find(source => source.id === selectedSourceId);
+  const [threshold, setThreshold] = useState(selectedSource?.stalledThresholdMinutes || 1440);
+  useEffect(() => setThreshold(selectedSource?.stalledThresholdMinutes || 1440), [selectedSourceId, selectedSource?.stalledThresholdMinutes]);
   const filtered = (view === 'mine' ? prs.filter(pr => pr.author?.login?.toLowerCase().includes(login.toLowerCase()) || pr.waitingOn === login) : prs).filter(pr => !search || `${pr.number} ${pr.title} ${pr.summary} ${pr.author?.login} ${pr.waitingOn || ''}`.toLowerCase().includes(search.toLowerCase()));
   const open = filtered.filter(pr => pr.state !== 'merged').length;
   const awaiting = filtered.filter(pr => pr.state === 'awaiting_review');
@@ -97,6 +110,7 @@ function Board({ prs, loading, error, onRetry, view, setView, navigate, search }
   const summary = `${open} Open PRs · Avg. time to review ${Math.floor(average)}h ${Math.round((average % 1) * 60)}m · ${filtered.filter(pr => pr.stalled).length} Stalled`;
   return <>
     <PageHeader kicker="Live board" title="Pull Requests" summary={summary} action={<Button primary onClick={() => navigate('/dashboard/connect')}><Icon name="plus" /> Connect Repository</Button>} />
+    {sources.length > 0 && <div className="threshold-settings"><label htmlFor="threshold-source">Stalled after</label><select id="threshold-source" value={selectedSourceId || sources[0].id} onChange={event => onSelectSource(event.target.value)}>{sources.map(source => <option key={source.id} value={source.id}>{source.repo}</option>)}</select><input aria-label="Stalled threshold in minutes" type="number" min="1" max="43200" value={threshold} onChange={event => setThreshold(event.target.value)} onBlur={() => onThresholdChange(selectedSourceId || sources[0].id, Number(threshold))} /><span>minutes</span></div>}
     <div className="board-toolbar"><div className="segmented"><button className={view === 'mine' ? 'active' : ''} onClick={() => setView('mine')}>My PRs</button><button className={view === 'waiting' ? 'active' : ''} onClick={() => setView('waiting')}>Waiting on me</button></div><span className="data-note">{filtered.length} pull requests</span></div>
     {loading ? <SkeletonBoard /> : error ? <div className="empty"><h2>Could not load the board</h2><p>{error}</p><Button onClick={onRetry}>Retry</Button></div> : !prs.length ? <div className="empty"><span className="empty-icon"><Icon name="pr" size={28} /></span><h2>No pull requests yet</h2><p>Connect a GitHub repository to see review activity here.</p><Button primary onClick={() => navigate('/dashboard/connect')}><Icon name="plus" /> Connect Repository</Button></div> : !filtered.length ? <div className="empty"><h2>No matching pull requests</h2><p>Try a different search or board view.</p></div> : <div className="board-scroll" tabIndex="0" aria-label="Pull request workflow board"><div className="board-columns">{STATES.map(state => <BoardColumn key={state} state={state} prs={filtered.filter(pr => pr.state === state)} navigate={navigate} />)}</div></div>}
   </>;
@@ -163,7 +177,7 @@ function DeliveryRow({ row, onReprocess }) {
   return <tr><td><div className="delivery-id" title={row.deliveryId}><code>{row.deliveryId || '—'}</code>{row.signatureVerified && <span className="verified" title="Signature verified">✓</span>}<button className="copy-id" onClick={copy} aria-label="Copy delivery ID">{copied ? '✓' : '⧉'}</button></div></td><td>{row.event || '—'}</td><td><StatusChip status={row.status}>{row.status}</StatusChip></td><td className="timestamp">{timestamp}</td><td>{row.status === 'failed' ? <Button small disabled={retrying} onClick={retry}>{retrying ? 'Retrying…' : retryMessage || 'Reprocess'}</Button> : '—'}</td></tr>;
 }
 
-function DeliveriesPage({ deliveries, search }) {
+function DeliveriesPage({ deliveries, search, onReprocess }) {
   const [filter, setFilter] = useState('all');
   const [rows, setRows] = useState(deliveries);
   useEffect(() => setRows(deliveries), [deliveries]);
@@ -171,8 +185,8 @@ function DeliveriesPage({ deliveries, search }) {
   const processed = rows.filter(row => row.status === 'processed').length;
   const failed = rows.filter(row => row.status === 'failed').length;
   const summary = `${rows.length.toLocaleString()} received · ${rows.length ? Math.round(processed / rows.length * 100) : 0}% processed · ${failed} failed`;
-  const reprocess = id => api.reprocess(id);
-  return <><PageHeader kicker="Webhooks" title="Deliveries Log" summary={summary} /><div className="delivery-toolbar"><div className="segmented">{['all', 'processed', 'duplicate', 'failed'].map(value => <button key={value} className={filter === value ? 'active' : ''} onClick={() => setFilter(value)}>{value[0].toUpperCase() + value.slice(1)}</button>)}</div><span className="data-note">Times shown in UTC</span></div>
+  const reprocess = async id => { await api.reprocess(id); await onReprocess(); };
+  return <><PageHeader kicker="Webhooks" title="Deliveries Log" summary={summary} /><div className="delivery-toolbar"><div className="segmented">{['all', 'received', 'processing', 'processed', 'failed'].map(value => <button key={value} className={filter === value ? 'active' : ''} onClick={() => setFilter(value)}>{value[0].toUpperCase() + value.slice(1)}</button>)}</div><span className="data-note">Times shown in UTC</span></div>
     <div className="table-wrap">{filtered.length ? <table><thead><tr><th>Delivery ID</th><th>Event</th><th>Status</th><th>Timestamp</th><th>Action</th></tr></thead><tbody>{filtered.map(row => <DeliveryRow key={row.id} row={row} onReprocess={reprocess} />)}</tbody></table> : <div className="empty compact"><span className="empty-icon"><Icon name="list" size={28} /></span><h2>{rows.length ? 'No matching deliveries' : 'No deliveries yet'}</h2><p>{rows.length ? 'Try another status filter.' : 'Webhook deliveries will appear here after GitHub sends events.'}</p></div>}</div>
   </>;
 }
@@ -193,12 +207,66 @@ export default function App() {
   const [route, navigate, back] = useRoute();
   const [prs, setPrs] = useState(MOCK ? mockPRs : []); const [deliveries, setDeliveries] = useState(MOCK ? mockDeliveries : []); const [repoName, setRepoName] = useState(MOCK ? 'aashwin49/ReviewClock' : '');
   const [loading, setLoading] = useState(!MOCK); const [error, setError] = useState(''); const [view, setView] = useState('mine'); const [source, setSource] = useState(null); const [search, setSearch] = useState(''); const [authOpen, setAuthOpen] = useState(false); const [authEpoch, setAuthEpoch] = useState(0);
-  const load = useCallback(async () => { setLoading(true); setError(''); try { setPrs(await api.prs()); } catch (e) { setError(e.message); if (e.status === 401) setAuthOpen(true); } try { setDeliveries(await api.deliveries()); } catch { setDeliveries([]); } try { const sources = await api.sources(); setRepoName(sources[0]?.repo || ''); } catch {} finally { setLoading(false); } }, []);
+  const [sources, setSources] = useState([]); const [selectedSourceId, setSelectedSourceId] = useState(''); const [liveStatus, setLiveStatus] = useState(MOCK ? 'offline' : 'reconnecting');
+  const load = useCallback(async () => { setLoading(true); setError(''); try { setPrs(await api.prs()); } catch (e) { setError(e.message); if (e.status === 401) setAuthOpen(true); } try { setDeliveries(await api.deliveries()); } catch { setDeliveries([]); } try { const connectedSources = await api.sources(); setSources(connectedSources); setSelectedSourceId(current => connectedSources.some(item => item.id === current) ? current : connectedSources[0]?.id || ''); setRepoName(connectedSources[0]?.repo || ''); } catch {} finally { setLoading(false); } }, []);
   useEffect(() => { if (!MOCK) load(); }, [load]);
+  useEffect(() => {
+    if (MOCK) return;
+    let active = true;
+    let stream;
+    let lastSequence = 0;
+    const start = async () => {
+      try {
+        const { ticket } = await api.streamTicket();
+        if (!active) return;
+        stream = new EventSource(api.streamUrl(ticket), { withCredentials: true });
+        stream.onopen = () => setLiveStatus('live');
+        stream.onerror = () => setLiveStatus('reconnecting');
+        stream.addEventListener('resync', event => {
+          lastSequence = Number(event.lastEventId || 0);
+          api.prs().then(setPrs).catch(() => {});
+        });
+        stream.addEventListener('activity', event => {
+          try {
+            const activity = JSON.parse(event.data);
+            const sequence = Number(event.lastEventId || activity.sequence);
+            if (sequence > lastSequence + 1) api.prs().then(setPrs).catch(() => {});
+            lastSequence = Math.max(lastSequence, sequence || 0);
+            if (!activity.pullRequest) return;
+            const state = activity.pullRequest.state;
+            const stateKey = ({ Draft: 'draft', 'Awaiting review': 'awaiting_review', 'Changes requested': 'changes_requested', Approved: 'approved', Merged: 'merged' })[state];
+            if (state === 'Closed') {
+              setPrs(current => current.filter(pr => !(pr.sourceId === activity.sourceId && pr.number === activity.pullRequest.number)));
+              return;
+            }
+            const incoming = { ...activity.pullRequest, state: stateKey || state, author: typeof activity.pullRequest.author === 'string' ? { login: activity.pullRequest.author } : activity.pullRequest.author, sourceId: activity.sourceId };
+            setPrs(current => {
+              const mapped = incoming.id ? incoming : { ...incoming, id: `${incoming.sourceId}:${incoming.number}` };
+              const index = current.findIndex(pr => pr.id === mapped.id || (pr.number === mapped.number && pr.sourceId === mapped.sourceId));
+              if (index < 0) return [mapped, ...current];
+              const next = [...current]; next[index] = { ...next[index], ...mapped }; return next;
+            });
+          } catch {}
+        });
+      } catch (e) {
+        if (active) setLiveStatus('reconnecting');
+        if (active) setTimeout(start, 5000);
+      }
+    };
+    start();
+    return () => { active = false; stream?.close(); };
+  }, []);
+  const saveThreshold = useCallback(async (sourceId, minutes) => {
+    if (!sourceId || !Number.isInteger(minutes) || minutes < 1 || minutes > 43200) return;
+    try {
+      const updated = await api.updateSource(sourceId, minutes);
+      setSources(current => current.map(item => item.id === sourceId ? { ...item, ...updated } : item));
+    } catch (e) { setError(e.message); }
+  }, []);
   useEffect(() => { if (route !== '/dashboard/connect') setSource(null); }, [route]);
   useEffect(() => { if (route === '/dashboard' && window.reviewClockOrigin?.isConnected) window.reviewClockOrigin.focus(); }, [route]);
   const active = route === '/dashboard/deliveries' ? 'deliveries' : route === '/dashboard/connect' || route.startsWith('/dashboard/prs/') ? '' : 'board';
-  const children = route === '/dashboard/connect' ? <ConnectPage source={source} setSource={setSource} setRepoName={setRepoName} onBoardOpen={load} onUnauthorized={() => setAuthOpen(true)} authEpoch={authEpoch} navigate={navigate} /> : route === '/dashboard/deliveries' ? <DeliveriesPage deliveries={deliveries} search={search} /> : <Board prs={prs} loading={loading} error={error} onRetry={load} view={view} setView={setView} navigate={navigate} search={search} />;
+  const children = route === '/dashboard/connect' ? <ConnectPage source={source} setSource={setSource} setRepoName={setRepoName} onBoardOpen={load} onUnauthorized={() => setAuthOpen(true)} authEpoch={authEpoch} navigate={navigate} /> : route === '/dashboard/deliveries' ? <DeliveriesPage deliveries={deliveries} search={search} onReprocess={async () => setDeliveries(await api.deliveries())} /> : <Board prs={prs} loading={loading} error={error} onRetry={load} view={view} setView={setView} navigate={navigate} search={search} sources={sources} selectedSourceId={selectedSourceId} onSelectSource={setSelectedSourceId} onThresholdChange={saveThreshold} />;
   const number = route.match(/^\/dashboard\/prs\/(\d+)$/)?.[1];
-  return <AppShell active={active} deliveries={deliveries} navigate={navigate} search={search} setSearch={setSearch} repoName={repoName}>{children}{number && <DetailDrawer number={number} navigate={navigate} back={back} />}{authOpen && <AuthDialog onClose={() => setAuthOpen(false)} onAuthenticated={() => { setAuthOpen(false); setAuthEpoch(value => value + 1); load(); }} />}</AppShell>;
+  return <AppShell active={active} deliveries={deliveries} navigate={navigate} search={search} setSearch={setSearch} repoName={repoName} liveStatus={liveStatus}>{children}{number && <DetailDrawer number={number} navigate={navigate} back={back} />}{authOpen && <AuthDialog onClose={() => setAuthOpen(false)} onAuthenticated={() => { setAuthOpen(false); setAuthEpoch(value => value + 1); load(); }} />}</AppShell>;
 }

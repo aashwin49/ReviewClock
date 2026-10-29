@@ -27,6 +27,8 @@ function applyEvent(facts, type, payload) {
   //Create a new record, copy its arrays, and then modify the copies.
   const record = {
     ...nextFacts[key],
+    title: pr.title || nextFacts[key].title,
+    author: pr.user?.login || nextFacts[key].author,
     lifecycleEvents: [...nextFacts[key].lifecycleEvents],
     reviews: [...nextFacts[key].reviews]
   };
@@ -39,6 +41,7 @@ function applyEvent(facts, type, payload) {
         action,
         state: pr.state,
         merged: pr.merged === true,
+        isDraft: pr.draft === true,
         timestamp: payload.updated_at || pr.updated_at || null
       };
       if (!record.lifecycleEvents.some(event => event.action === lifecycleEvent.action && event.timestamp === lifecycleEvent.timestamp)) {
@@ -54,7 +57,8 @@ function applyEvent(facts, type, payload) {
       const reviewEvent = {
         state: review.state,
         submittedAt: review.submitted_at || null,
-        id: review.id ?? null
+        id: review.id ?? null,
+        reviewer: review.user?.login || null
       };
       if (!record.reviews.some(event =>
         (reviewEvent.id != null && event.id === reviewEvent.id) ||
@@ -130,12 +134,27 @@ function derive(facts) {
 
     const reviewStatus = latestReview?.state || 'pending';
 
+    const waitingEvents = lifecycleEvents.filter(event =>
+      ['opened', 'reopened', 'ready_for_review', 'review_requested', 'synchronize'].includes(event.action)
+    );
+    const waitingSince = waitingEvents.at(-1)?.timestamp || null;
+    const readyEvent = lifecycleEvents.find(event => event.action === 'ready_for_review' || (event.action === 'opened' && !event.isDraft));
+    const readyTime = readyEvent?.timestamp ? new Date(readyEvent.timestamp).getTime() : null;
+    const firstReview = latestByTimestamp(
+      record.reviews.filter(review => ['approved', 'changes_requested'].includes(review.state) &&
+        review.submittedAt && review.reviewer && review.reviewer !== record.author &&
+        readyTime !== null && new Date(review.submittedAt).getTime() >= readyTime),
+      'submittedAt'
+    )[0];
+
     let displayState;
 
     if (state === 'merged') {
       displayState = 'Merged';
     } else if (state === 'closed') {
       displayState = 'Closed';
+    } else if (latestLifecycle?.isDraft) {
+      displayState = 'Draft';
     } else if (reviewStatus === 'approved') {
       displayState = 'Approved';
     } else if (reviewStatus === 'changes_requested') {
@@ -151,7 +170,10 @@ function derive(facts) {
       author: record.author,
       state,
       reviewStatus,
-      displayState
+      displayState,
+      waitingSince,
+      readyAt: readyEvent?.timestamp || null,
+      firstReviewAt: firstReview?.submittedAt || null
     };
   }
 
