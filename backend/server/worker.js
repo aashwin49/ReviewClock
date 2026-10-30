@@ -145,6 +145,7 @@ async function processNextDelivery({ processingLeaseMs = Number(process.env.DELI
 }
 
 async function startWorker({ pollIntervalMs = 3000, sweepIntervalMs = 45_000 } = {}) {
+  if (!process.env.MONGODB_URI) throw new Error('MONGODB_URI is required');
   await mongoose.connect(process.env.MONGODB_URI);
   console.log('ReviewClock background worker started...');
   const workerTimer = setInterval(() => {

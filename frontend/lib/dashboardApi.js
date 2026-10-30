@@ -24,7 +24,7 @@ async function request(path, options = {}) {
     if (!response.ok) {
       const detail = body?.error || body?.message;
       const message = detail || (response.status === 404
-        ? `API route not found: ${options.method || 'GET'} ${path}. Check that the Cloudflare Tunnel points to the backend service.`
+        ? `API route not found: ${options.method || 'GET'} ${path}. Check that the configured backend URL points to the ReviewClock API.`
         : `Request to ${path} failed (${response.status})`);
       throw new ApiError(message, response.status);
     }

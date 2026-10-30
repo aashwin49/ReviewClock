@@ -45,7 +45,7 @@
 * **Total tests passed:** 31 across the final applicable backend runs (30 in the suite excluding the legacy broad-cleanup test, plus that integration test run separately).
 * **Total tests failed:** 0 in the final runs. One initial non-escalated MongoDB run timed out because the sandbox denied loopback access; rerunning the same suite with approved localhost access passed.
 * **Total tests blocked:** 0 automated Phase 9 drills. External GitHub and deployed tunnel verification remains manual and was not counted as a passed test.
-* **Remaining issues:** The real GitHub-to-Cloudflare-Tunnel path has not been tested from GitHub. Duplicate attempts are logged server-side but are not retained as separate rows in the Deliveries UI.
+* **Remaining issues:** A live GitHub-to-deployed-Render webhook path has not been tested. Duplicate attempts are logged server-side but are not retained as separate rows in the Deliveries UI.
 * **Overall Phase 9 status:** Automated failure drills pass; live external webhook verification remains outstanding.
 
 ## Reproduction
@@ -61,7 +61,7 @@ The integration suite is opt-in: it skips its MongoDB tests unless `MONGODB_URI_
 
 ## Reconnect versus webhook recovery
 
-SSE catch-up resumes from the browser's saved activity sequence and replays `Activity` rows that already exist in MongoDB. If Express is down when GitHub sends a webhook, Cloudflare returns an origin error such as `502`; the request never reaches ReviewClock, so no `Delivery`, PR update, or activity row exists for SSE to replay. GitHub does not automatically redeliver failed webhook deliveries. After the backend and tunnel are healthy, open the repository's **Settings → Webhooks → Recent Deliveries** and use **Redeliver** on the failed request. GitHub retains deliveries for manual redelivery for three days. The redelivery keeps the original `X-GitHub-Delivery` value; the unique index safely prevents a second insert if the original request had actually reached ReviewClock.
+SSE catch-up resumes from the browser's saved activity sequence and replays `Activity` rows that already exist in MongoDB. If Express is down when GitHub sends a webhook, the public endpoint returns an origin error such as `502`; the request never reaches ReviewClock, so no `Delivery`, PR update, or activity row exists for SSE to replay. GitHub does not automatically redeliver failed webhook deliveries. After the backend is healthy, open the repository's **Settings → Webhooks → Recent Deliveries** and use **Redeliver** for the failed request. GitHub retains deliveries for manual redelivery for three days. The redelivery keeps the original `X-GitHub-Delivery` value; the unique index safely prevents a second insert if the original request had actually reached ReviewClock. For local development, the public endpoint may be a Cloudflare Quick Tunnel.
 
 For a browser-only SSE interruption while Express and MongoDB remain available, the frontend now closes the errored EventSource and requests a fresh single-use stream ticket. It reconnects using the last sequence successfully processed by the React handler; the server replays newer activity records from MongoDB in sequence. This avoids relying on the old one-use ticket and its cross-site cookie fallback during EventSource's built-in retry.
 

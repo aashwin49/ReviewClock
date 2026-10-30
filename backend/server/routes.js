@@ -101,6 +101,8 @@ router.post('/api/sources', requireAuth, async (req, res, next) => {
       endpointId: crypto.randomBytes(32).toString('base64url'),
       webhookSecret: crypto.randomBytes(32).toString('hex')
     });
+    // API_BASE_URL is the public backend origin in production. A local fallback
+    // keeps generated webhooks usable during direct localhost development.
     const baseUrl = (process.env.API_BASE_URL || `http://localhost:${process.env.PORT || 3000}`).replace(/\/$/, '');
     return res.status(201).json({
       success: true,

@@ -61,13 +61,16 @@ app.use((error, req, res, next) => {
 
 async function start() {
   if (!process.env.MONGODB_URI) throw new Error('MONGODB_URI is required');
+  if (process.env.NODE_ENV === 'production' && !process.env.API_BASE_URL) {
+    throw new Error('API_BASE_URL is required in production so GitHub webhook URLs use the public backend origin');
+  }
   if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
     throw new Error('JWT_SECRET must be configured with at least 32 characters');
   }
   await mongoose.connect(process.env.MONGODB_URI);
   startActivityPoller();
   const port = Number(process.env.PORT) || 3000;
-  return app.listen(port, () => console.log(`ReviewClock server listening on port ${port}`));
+  return app.listen(port, '0.0.0.0', () => console.log(`ReviewClock server listening on port ${port}`));
 }
 
 if (require.main === module) {
