@@ -1,5 +1,8 @@
-const API_BASE = (window.REVIEWCLOCK_API_BASE || import.meta.env.VITE_API_BASE_URL || '').trim().replace(/\/$/, '');
-const WEBHOOK_BASE = (window.REVIEWCLOCK_WEBHOOK_BASE || import.meta.env.VITE_WEBHOOK_BASE_URL || import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_PROXY_TARGET || '').trim().replace(/\/$/, '');
+function normalizeApiBase(value) {
+  return String(value || '').trim().replace(/\/+$/, '').replace(/\/api$/i, '');
+}
+const API_BASE = normalizeApiBase(window.REVIEWCLOCK_API_BASE || import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL);
+const WEBHOOK_BASE = normalizeApiBase(window.REVIEWCLOCK_WEBHOOK_BASE || import.meta.env.VITE_WEBHOOK_BASE_URL || import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_PROXY_TARGET);
 const MOCK = window.REVIEWCLOCK_MOCK === true || new URLSearchParams(location.search).get('mock') === '1';
 const token = () => window.REVIEWCLOCK_TOKEN || sessionStorage.getItem('reviewclockToken') || '';
 
@@ -23,9 +26,11 @@ async function request(path, options = {}) {
       : null;
     if (!response.ok) {
       const detail = body?.error || body?.message;
-      const message = detail || (response.status === 404
-        ? `API route not found: ${options.method || 'GET'} ${path}. Check that the configured backend URL points to the ReviewClock API.`
-        : `Request to ${path} failed (${response.status})`);
+      const message = detail || (response.status === 401
+        ? 'Authentication required. Please sign in and try again.'
+        : response.status === 404
+          ? `API route not found: ${options.method || 'GET'} ${path}. Check that the configured backend URL points to the ReviewClock API.`
+          : `Request to ${path} failed (${response.status})`);
       throw new ApiError(message, response.status);
     }
     return body;
