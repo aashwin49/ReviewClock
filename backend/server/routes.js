@@ -133,7 +133,7 @@ router.patch('/api/sources/:id', requireAuth, async (req, res, next) => {
     const source = await Source.findOneAndUpdate(
       { _id: req.params.id, userId: req.user._id },
       { $set: { stalledThresholdMinutes: threshold } },
-      { new: true, runValidators: true }
+      { returnDocument: 'after', runValidators: true }
     );
     if (!source) return res.status(404).json({ success: false, error: 'Source not found' });
     return res.json({ success: true, data: cleanSource(source) });
@@ -146,7 +146,7 @@ router.post('/api/sources/:id/rotate-secret', requireAuth, async (req, res, next
     const source = await Source.findOneAndUpdate(
       { _id: req.params.id, userId: req.user._id },
       { $set: { webhookSecret: secret, status: 'waiting' } },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!source) return res.status(404).json({ success: false, error: 'Source not found' });
     return res.json({ success: true, data: cleanSource(source), secret });
@@ -276,7 +276,7 @@ router.get('/api/sources/:id/deliveries', requireAuth, async (req, res, next) =>
     const source = await Source.findOne({ _id: req.params.id, userId: req.user._id }).select('_id');
     if (!source) return res.status(404).json({ success: false, error: 'Source not found' });
     const filter = { sourceId: String(source._id) };
-    const allowedStatuses = ['received', 'processing', 'processed', 'failed'];
+    const allowedStatuses = ['received', 'processing', 'processed', 'failed', 'ignored'];
     if (req.query.status) {
       if (!allowedStatuses.includes(req.query.status)) return res.status(400).json({ success: false, error: 'Unsupported delivery status filter' });
       filter.status = req.query.status;
@@ -299,7 +299,7 @@ router.post('/api/deliveries/:id/reprocess', requireAuth, async (req, res, next)
     const delivery = await Delivery.findOneAndUpdate(
       { _id: req.params.id, sourceId: { $in: sourceIds }, status: 'failed' },
       { $set: { status: 'received' }, $unset: { error: 1 } },
-      { new: true }
+      { returnDocument: 'after' }
     ).select('-rawPayload');
     if (!delivery) return res.status(404).json({ success: false, error: 'Failed delivery not found' });
     return res.json({ success: true, data: delivery });

@@ -99,9 +99,9 @@ export const api = {
   async source(id, signal) { if (MOCK) return { id, repo: 'aashwin49/ReviewClock', status: 'waiting' }; return mapSource(await request(`/api/sources/${encodeURIComponent(id)}`, { signal }).then(unwrap)); },
   async updateSource(id, stalledThresholdMinutes) { return mapSource(unwrap(await request(`/api/sources/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ stalledThresholdMinutes }) }))); },
   async prs(signal) { if (MOCK) return mockPRs; return (await getPages('/api/prs', signal)).filter(raw => (raw.displayState || raw.derived?.state) !== 'Closed').map(mapPR); },
-  async pr(number, signal) {
+  async pr(number, signal, knownPR) {
     if (MOCK) return mockPRs.find(pr => pr.number === Number(number)) ? { pr: mockPRs.find(pr => pr.number === Number(number)), verdicts: [], events: [] } : null;
-    const pr = (await this.prs(signal)).find(item => item.number === Number(number));
+    const pr = knownPR || (await this.prs(signal)).find(item => item.number === Number(number));
     if (!pr) return null;
     if (!pr.id) return { pr, verdicts: [], events: [] };
     const raw = unwrap(await request(`/api/prs/${encodeURIComponent(pr.id)}`, { signal }));
@@ -120,7 +120,7 @@ export const api = {
   async streamTicket() {
     return request('/api/stream-ticket', { method: 'POST', body: '{}' });
   },
-  streamUrl(ticket) { return `${API_BASE}/api/stream?ticket=${encodeURIComponent(ticket)}`; }
+  streamUrl(ticket, lastEventId = 0) { return `${API_BASE}/api/stream?ticket=${encodeURIComponent(ticket)}&lastEventId=${encodeURIComponent(lastEventId)}`; }
 };
 function mapEvent(e) {
   if (e.event === 'pull_request_review') {

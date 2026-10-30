@@ -5,8 +5,9 @@ const deliverySchema = new mongoose.Schema({
   sourceId: {type:String, required:true},
   deliveryID:{type:String, required:true},// From 'x-github-delivery' header
   event:{type:String, required: true},// From 'x-github-event' header
-  status:{type: String, enum:['received', 'processing', 'processed', 'failed'], default: 'received'},  //Tracks processing state for the inbox pattern
+  status:{type: String, enum:['received', 'processing', 'processed', 'failed', 'ignored'], default: 'received'},  //Tracks processing state for the inbox pattern
   error:{type:String},
+  processingAt:{type:Date, default:null},
   rawPayload:{type: Object, required:true},
   receivedAt:{type:Date, default: Date.now}
 });

@@ -1,5 +1,5 @@
 export type PRState = 'draft' | 'awaiting_review' | 'changes_requested' | 'approved' | 'merged';
-export type DeliveryStatus = 'processed' | 'duplicate' | 'failed' | 'received' | 'processing';
+export type DeliveryStatus = 'processed' | 'duplicate' | 'failed' | 'received' | 'processing' | 'ignored';
 
 export interface Source {
   id: string;

@@ -10,7 +10,8 @@
     "start": "node server/index.js",
     "dev": "nodemon server/index.js",
     "worker": "node server/worker.js",
-    "test": "vitest"
+    "test": "vitest run --exclude tests/worker.test.js",
+    "test:integration": "vitest run tests/worker.test.js"
   },
   "repository": {
     "type": "git",

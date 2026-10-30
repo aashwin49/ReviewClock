@@ -137,7 +137,16 @@ function derive(facts) {
     const waitingEvents = lifecycleEvents.filter(event =>
       ['opened', 'reopened', 'ready_for_review', 'review_requested', 'synchronize'].includes(event.action)
     );
-    const waitingSince = waitingEvents.at(-1)?.timestamp || null;
+    // A non-author's review comment is reviewer activity even though it does
+    // not change the verdict. Reset the waiting clock so a stalled PR gets a
+    // fresh review window instead of being immediately stalled again.
+    const reviewerActivity = record.reviews.filter(review =>
+      review.state === 'commented' && review.reviewer && review.reviewer !== record.author && review.submittedAt
+    );
+    const waitingSince = latestByTimestamp([
+      ...waitingEvents.map(event => ({ timestamp: event.timestamp, id: event.action })),
+      ...reviewerActivity.map(review => ({ timestamp: review.submittedAt, id: review.id }))
+    ], 'timestamp').at(-1)?.timestamp || null;
     const readyEvent = lifecycleEvents.find(event => event.action === 'ready_for_review' || (event.action === 'opened' && !event.isDraft));
     const readyTime = readyEvent?.timestamp ? new Date(readyEvent.timestamp).getTime() : null;
     const firstReview = latestByTimestamp(

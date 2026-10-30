@@ -102,6 +102,26 @@ describe('PR State Derivation Logic', () => {
     expect(derive(facts)['owner/repo#1'].displayState).toBe('Changes requested');
   });
 
+  test('A reviewer comment resets the awaiting-review clock without changing the verdict', () => {
+    let facts = applyEvent({}, 'pull_request', makePayload('opened', 1000));
+    facts = applyEvent(facts, 'pull_request_review', makePayload('submitted', 120000, {
+      review: { id: 8, user: { login: 'reviewer1' }, state: 'commented', submitted_at: new Date(120000).toISOString() }
+    }));
+
+    const derived = derive(facts)['owner/repo#1'];
+    expect(derived.displayState).toBe('Awaiting review');
+    expect(derived.waitingSince).toBe(new Date(120000).toISOString());
+  });
+
+  test('PR author comments do not reset the reviewer wait clock', () => {
+    let facts = applyEvent({}, 'pull_request', makePayload('opened', 1000));
+    facts = applyEvent(facts, 'pull_request_review', makePayload('submitted', 120000, {
+      review: { id: 9, user: { login: 'author1' }, state: 'commented', submitted_at: new Date(120000).toISOString() }
+    }));
+
+    expect(derive(facts)['owner/repo#1'].waitingSince).toBe(new Date(1000).toISOString());
+  });
+
   test('PR Reopening: Transitions from Closed back to Awaiting Review', () => {
     // 1. Closed
     let facts = applyEvent({}, 'pull_request', makePayload('closed', 1000, { state: 'closed' }));

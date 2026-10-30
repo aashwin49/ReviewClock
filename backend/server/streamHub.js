@@ -45,36 +45,103 @@ function userForSession(id) {
 }
 
 function writeEvent(res, event) {
-  res.write(`id: ${event.sequence}\nevent: activity\ndata: ${JSON.stringify(event)}\n\n`);
+  return res.write(`id: ${event.sequence}\nevent: activity\ndata: ${JSON.stringify(event)}\n\n`);
+}
+
+function cleanupClient(client) {
+  if (client.closed) return;
+  client.closed = true;
+  clearInterval(client.heartbeat);
+  clearTimeout(client.blockedTimer);
+  client.req.removeListener('aborted', client.cleanup);
+  client.res.removeListener('close', client.cleanup);
+  client.res.removeListener('error', client.cleanup);
+  client.res.removeListener('drain', client.onDrain);
+  const group = clients.get(client.userId);
+  group?.delete(client);
+  if (group?.size === 0) clients.delete(client.userId);
+  client.queue.length = 0;
+}
+
+function endSlowClient(client) {
+  cleanupClient(client);
+  if (!client.res.destroyed && !client.res.writableEnded) client.res.destroy();
+}
+
+function queueEvent(client, event) {
+  const lastQueued = client.queue.at(-1)?.sequence || client.lastSent;
+  if (event.sequence <= lastQueued) return;
+  client.queue.push(event);
+  if (client.queue.length > REPLAY_LIMIT) return endSlowClient(client);
+  if (!client.blockedTimer) {
+    client.blockedTimer = setTimeout(() => endSlowClient(client), 30_000);
+    client.blockedTimer.unref?.();
+  }
+}
+
+function watchBackpressure(client) {
+  if (client.blockedTimer) return;
+  client.blockedTimer = setTimeout(() => endSlowClient(client), 30_000);
+  client.blockedTimer.unref?.();
+}
+
+function sendEvent(client, event) {
+  if (client.closed || event.sequence <= client.lastSent) return;
+  if (client.backpressured || client.queue.length) return queueEvent(client, event);
+  try {
+    const writable = writeEvent(client.res, event);
+    client.lastSent = event.sequence;
+    client.pollCursor = Math.max(client.pollCursor || 0, event.sequence);
+    if (!writable) {
+      client.backpressured = true;
+      watchBackpressure(client);
+    }
+  } catch { cleanupClient(client); }
 }
 
 function deliverToClient(client, event) {
   if (client.closed || event.sequence <= client.lastSent) return;
-  if (client.catchingUp) {
-    client.queued ||= [];
-    client.queued.push(event);
-    return;
-  }
-  writeEvent(client.res, event);
-  client.lastSent = event.sequence;
-  client.pollCursor = Math.max(client.pollCursor || 0, event.sequence);
+  if (client.catchingUp || client.backpressured || client.queue.length) return queueEvent(client, event);
+  sendEvent(client, event);
 }
 
-async function appendActivity({ userId, sourceId, type, pullRequest }) {
+function flushQueue(client) {
+  if (client.catchingUp) return;
+  client.backpressured = false;
+  clearTimeout(client.blockedTimer);
+  client.blockedTimer = null;
+  while (!client.closed && !client.backpressured && client.queue.length) {
+    const event = client.queue.shift();
+    if (event.sequence <= client.lastSent) continue;
+    try {
+      const writable = writeEvent(client.res, event);
+      client.lastSent = event.sequence;
+      client.pollCursor = Math.max(client.pollCursor || 0, event.sequence);
+      if (!writable) client.backpressured = true;
+    } catch { cleanupClient(client); }
+  }
+  if (client.queue.length) watchBackpressure(client);
+}
+
+async function appendActivity({ userId, sourceId, type, pullRequest, eventKey = null }) {
   const key = String(userId);
   const prior = appendQueues.get(key) || Promise.resolve();
-  const pending = prior.then(() => appendActivityInOrder({ userId: key, sourceId, type, pullRequest }));
+  const pending = prior.then(() => appendActivityInOrder({ userId: key, sourceId, type, pullRequest, eventKey }));
   appendQueues.set(key, pending.catch(() => {}));
   return pending;
 }
 
-async function appendActivityInOrder({ userId, sourceId, type, pullRequest }) {
+async function appendActivityInOrder({ userId, sourceId, type, pullRequest, eventKey }) {
+  if (eventKey) {
+    const existing = await Activity.findOne({ eventKey });
+    if (existing) return existing;
+  }
   const counter = await Counter.findOneAndUpdate(
     { _id: userId }, { $inc: { sequence: 1 } },
-    { upsert: true, new: true, setDefaultsOnInsert: true }
+    { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
   );
   const event = await Activity.create({
-    userId, sequence: counter.sequence, sourceId: String(sourceId), type, pullRequest
+    userId, sequence: counter.sequence, sourceId: String(sourceId), type, pullRequest, ...(eventKey ? { eventKey } : {})
   });
   const listeners = clients.get(userId);
   if (listeners) for (const client of listeners) {
@@ -119,53 +186,63 @@ async function connectStream(req, res, userId) {
   });
   res.flushHeaders?.();
 
-  const client = { res, lastSent: lastEventId, pollCursor: lastEventId, closed: false };
+  const client = { req, res, userId: String(userId), lastSent: lastEventId, pollCursor: lastEventId, closed: false, queue: [], backpressured: false };
   const key = String(userId);
   if (!clients.has(key)) clients.set(key, new Set());
   clients.get(key).add(client);
 
-  const cleanup = () => {
-    if (client.closed) return;
-    client.closed = true;
-    clearInterval(heartbeat);
-    const group = clients.get(key);
-    group?.delete(client);
-    if (group?.size === 0) clients.delete(key);
-  };
-  const heartbeat = setInterval(() => { if (!client.closed) res.write(': heartbeat\n\n'); }, 25_000);
-  req.on('aborted', cleanup);
-  res.on('close', cleanup);
-  res.on('error', cleanup);
+  client.cleanup = () => cleanupClient(client);
+  client.onDrain = () => flushQueue(client);
+  client.heartbeat = setInterval(() => {
+    if (client.closed || client.backpressured || res.destroyed || res.writableEnded) return;
+    try { if (!res.write(': heartbeat\n\n')) { client.backpressured = true; watchBackpressure(client); } }
+    catch { cleanupClient(client); }
+  }, 15_000);
+  client.heartbeat.unref?.();
+  req.on('aborted', client.cleanup);
+  res.on('close', client.cleanup);
+  res.on('error', client.cleanup);
+  res.on('drain', client.onDrain);
   client.catchingUp = true;
 
   // Register before querying to close the replay/live race; sequence de-duplication
   // ensures an event seen by both paths is only written once.
-  const missedCount = await Activity.countDocuments({ userId: key, sequence: { $gt: lastEventId } });
+  let missedCount;
+  try { missedCount = await Activity.countDocuments({ userId: key, sequence: { $gt: lastEventId } }); }
+  catch (error) { cleanupClient(client); throw error; }
   if (client.closed) return;
   if (missedCount > REPLAY_LIMIT) {
-    const newest = await Counter.findById(key).lean();
+    let newest;
+    try { newest = await Counter.findById(key).lean(); }
+    catch (error) { cleanupClient(client); throw error; }
+    if (client.closed) return;
     const sequence = newest?.sequence || lastEventId;
-    res.write(`id: ${sequence}\nevent: resync\ndata: ${JSON.stringify({ sequence })}\n\n`);
+    try {
+      if (!res.write(`id: ${sequence}\nevent: resync\ndata: ${JSON.stringify({ sequence })}\n\n`)) {
+        client.backpressured = true;
+        watchBackpressure(client);
+      }
+    }
+    catch { cleanupClient(client); return; }
     client.lastSent = sequence;
   } else {
-    const missed = await Activity.find({ userId: key, sequence: { $gt: lastEventId } })
-      .sort({ sequence: 1 }).lean();
+    let missed;
+    try { missed = await Activity.find({ userId: key, sequence: { $gt: lastEventId } }).sort({ sequence: 1 }).lean(); }
+    catch (error) { cleanupClient(client); throw error; }
+    if (client.closed) return;
     for (const event of missed) {
-      if (event.sequence > client.lastSent) {
-        writeEvent(res, event);
-        client.lastSent = event.sequence;
-      }
+      if (event.sequence <= client.lastSent) continue;
+      if (client.backpressured) queueEvent(client, event);
+      else sendEvent(client, event);
     }
   }
   client.catchingUp = false;
-  for (const event of client.queued || []) {
-    if (event.sequence > client.lastSent) {
-      writeEvent(res, event);
-      client.lastSent = event.sequence;
-    }
-  }
-  client.queued = [];
-  client.pollCursor = Math.max(client.pollCursor, client.lastSent);
+  if (!client.backpressured && client.queue.length) flushQueue(client);
+  client.pollCursor = Math.max(client.pollCursor || 0, client.lastSent);
 }
 
-module.exports = { issueTicket, takeTicket, createSession, userForSession, appendActivity, connectStream, startActivityPoller };
+function getActiveStreamCount(userId) {
+  return clients.get(String(userId))?.size || 0;
+}
+
+module.exports = { issueTicket, takeTicket, createSession, userForSession, appendActivity, connectStream, startActivityPoller, getActiveStreamCount };

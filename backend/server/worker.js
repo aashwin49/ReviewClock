@@ -7,6 +7,7 @@ const PullRequest = require('./models/PullRequest');
 const Source = require('./models/Source');
 const { applyEvent, derive } = require('./logic/prState');
 const { appendActivity } = require('./streamHub');
+const { isSupportedPullRequestEvent, validatePullRequestPayload } = require('./logic/webhookValidation');
 
 function publicPR(prDoc) {
   return {
@@ -21,9 +22,17 @@ async function processDelivery(delivery) {
   if (!delivery) throw new Error('A delivery is required');
   try {
     const payload = delivery.rawPayload;
+    if (!isSupportedPullRequestEvent(delivery.event)) {
+      delivery.status = 'ignored';
+      delivery.processingAt = null;
+      delivery.error = `Unsupported webhook event: ${delivery.event || 'unknown'}`;
+      await delivery.save();
+      return null;
+    }
+    const payloadError = validatePullRequestPayload(delivery.event, payload);
+    if (payloadError) throw new Error(payloadError);
     const pr = payload?.pull_request;
     const repo = payload?.repository?.full_name;
-    if (!repo || !pr?.number) throw new Error('Delivery is missing repository or pull request data');
 
     const prNumber = pr.number;
     let source = null;
@@ -65,15 +74,18 @@ async function processDelivery(delivery) {
         userId: source.userId,
         sourceId: delivery.sourceId,
         type: 'pull_request.updated',
-        pullRequest: publicPR(prDoc)
+        pullRequest: publicPR(prDoc),
+        eventKey: `${delivery.sourceId}:${delivery.deliveryID}:pull_request.updated`
       });
     }
 
     delivery.status = 'processed';
+    delivery.processingAt = null;
     await delivery.save();
     return prDoc;
   } catch (error) {
     delivery.status = 'failed';
+    delivery.processingAt = null;
     delivery.error = error.message;
     await delivery.save();
     throw error;
@@ -103,7 +115,7 @@ async function sweepStalledPullRequests({ now = new Date() } = {}) {
         $or: [{ stalledForSince: null }, { $expr: { $ne: ['$stalledForSince', '$waitingSince'] } }]
       }, {
         $set: { stalledForSince: waitingSince, 'derived.stalled': true }
-      }, { new: true });
+      }, { returnDocument: 'after' });
       if (!updated) continue;
       flagged += 1;
       await appendActivity({
@@ -117,11 +129,17 @@ async function sweepStalledPullRequests({ now = new Date() } = {}) {
   return flagged;
 }
 
-async function processNextDelivery() {
+async function processNextDelivery({ processingLeaseMs = Number(process.env.DELIVERY_PROCESSING_LEASE_MS) || 60_000 } = {}) {
+  const staleBefore = new Date(Date.now() - processingLeaseMs);
   const delivery = await Delivery.findOneAndUpdate(
-    { status: 'received' },
-    { $set: { status: 'processing' } },
-    { returnDocument: 'after' }
+    {
+      $or: [
+        { status: 'received' },
+        { status: 'processing', $or: [{ processingAt: null }, { processingAt: { $lte: staleBefore } }] }
+      ]
+    },
+    { $set: { status: 'processing', processingAt: new Date() } },
+    { returnDocument: 'after', sort: { receivedAt: 1 } }
   );
   return delivery ? processDelivery(delivery) : null;
 }

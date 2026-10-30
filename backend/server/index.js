@@ -1,4 +1,3 @@
-const crypto = require('crypto');
 const express = require('express');
 const mongoose = require('mongoose');
 require('dotenv').config();
@@ -8,8 +7,36 @@ const Source = require('./models/Source');
 const { router } = require('./routes');
 const { startActivityPoller } = require('./streamHub');
 const { processNextDelivery } = require('./worker');
+const { createGitHubWebhookHandler } = require('./githubWebhook');
 
 const app = express();
+const frontendOrigin = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
+
+// Helmet-style baseline headers without enabling cross-origin embedding or sniffing.
+app.use((req, res, next) => {
+  res.set({
+    'Content-Security-Policy': "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'",
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
+    'Cross-Origin-Resource-Policy': 'same-origin'
+  });
+  next();
+});
+
+// Browser API access is limited to the configured React origin. GitHub webhooks
+// are outside /api and remain usable by GitHub's server-to-server delivery.
+app.use('/api', (req, res, next) => {
+  const origin = req.get('Origin');
+  if (origin && origin !== frontendOrigin) return res.status(403).json({ success: false, error: 'Origin not allowed' });
+  if (origin) res.set({ 'Access-Control-Allow-Origin': frontendOrigin, 'Access-Control-Allow-Credentials': 'true' });
+  res.set('Vary', 'Origin');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type, Last-Event-ID');
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  next();
+});
+
 app.use(express.json({
   limit: '1mb',
   verify: (req, res, buffer) => { req.rawBody = buffer; }
@@ -18,45 +45,7 @@ app.use(express.json({
 app.get('/', (req, res) => res.send('ReviewClock server is running!'));
 app.get('/healthz', (req, res) => res.json({ success: true }));
 
-app.post('/hooks/github/:endpointId', async (req, res, next) => {
-  try {
-    const source = await Source.findOne({ endpointId: req.params.endpointId }).select('+endpointId +webhookSecret');
-    if (!source) return res.status(404).send('Unknown webhook endpoint');
-
-    const signature = req.get('x-hub-signature-256') || '';
-    const supplied = /^sha256=([a-f0-9]{64})$/i.exec(signature);
-    const expected = crypto.createHmac('sha256', source.webhookSecret).update(req.rawBody || Buffer.alloc(0)).digest();
-    const actual = supplied ? Buffer.from(supplied[1], 'hex') : Buffer.alloc(0);
-    if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) {
-      return res.status(401).send('Unauthorized: Invalid signature');
-    }
-
-    const deliveryId = req.get('x-github-delivery');
-    const event = req.get('x-github-event');
-    if (!deliveryId || !event) return res.status(400).send('Missing GitHub delivery headers');
-
-    if (event === 'ping') {
-      await Source.updateOne({ _id: source._id }, { $set: { status: 'connected', lastDeliveryAt: new Date() } });
-      return res.status(202).send('Ping accepted');
-    }
-
-    let inserted = false;
-    try {
-      await Delivery.create({
-        sourceId: String(source._id),
-        deliveryID: deliveryId,
-        event,
-        rawPayload: req.body
-      });
-      inserted = true;
-    } catch (error) {
-      if (error.code !== 11000) throw error;
-    }
-    await Source.updateOne({ _id: source._id }, { $set: { lastDeliveryAt: new Date() } });
-    if (inserted) setImmediate(() => processNextDelivery().catch(error => console.error('Could not process webhook delivery:', error.message)));
-    return res.status(202).send('Accepted');
-  } catch (error) { return next(error); }
-});
+app.post('/hooks/github/:endpointId', createGitHubWebhookHandler({ Source, Delivery, processNextDelivery }));
 
 app.use(router);
 app.use((error, req, res, next) => {
