@@ -129,9 +129,9 @@ async function sweepStalledPullRequests({ now = new Date() } = {}) {
   return flagged;
 }
 
-async function processNextDelivery({ processingLeaseMs = Number(process.env.DELIVERY_PROCESSING_LEASE_MS) || 60_000 } = {}) {
+async function claimNextDelivery({ processingLeaseMs = Number(process.env.DELIVERY_PROCESSING_LEASE_MS) || 60_000 } = {}) {
   const staleBefore = new Date(Date.now() - processingLeaseMs);
-  const delivery = await Delivery.findOneAndUpdate(
+  return Delivery.findOneAndUpdate(
     {
       $or: [
         { status: 'received' },
@@ -141,6 +141,10 @@ async function processNextDelivery({ processingLeaseMs = Number(process.env.DELI
     { $set: { status: 'processing', processingAt: new Date() } },
     { returnDocument: 'after', sort: { receivedAt: 1 } }
   );
+}
+
+async function processNextDelivery(options = {}) {
+  const delivery = await claimNextDelivery(options);
   return delivery ? processDelivery(delivery) : null;
 }
 
@@ -157,11 +161,54 @@ async function startWorker({ pollIntervalMs = 3000, sweepIntervalMs = 45_000 } =
   return { workerTimer, sweeperTimer };
 }
 
+async function runWorkerOnce({
+  connect = uri => mongoose.connect(uri),
+  disconnect = () => mongoose.disconnect(),
+  claim = claimNextDelivery,
+  processDeliveryFn = processDelivery,
+  sweep = sweepStalledPullRequests
+} = {}) {
+  const mongoUri = process.env.MONGODB_URI;
+  if (!mongoUri) throw new Error('MONGODB_URI is required');
+
+  let claimedCount = 0;
+  let failedCount = 0;
+  const errors = [];
+  try {
+    await connect(mongoUri);
+    console.log('ReviewClock one-shot worker started...');
+
+    while (true) {
+      const delivery = await claim();
+      if (!delivery) break;
+      claimedCount += 1;
+      try {
+        await processDeliveryFn(delivery);
+      } catch (error) {
+        failedCount += 1;
+        errors.push(error);
+        console.error(`Could not process delivery ${delivery.deliveryID || delivery._id}:`, error.message);
+      }
+    }
+
+    const sweptCount = await sweep();
+    console.log(`ReviewClock one-shot worker finished: ${claimedCount} claimed, ${failedCount} failed, ${sweptCount} stalled pull requests swept.`);
+    if (errors.length) {
+      throw new AggregateError(errors, `One-shot worker failed to process ${failedCount} delivery(s)`);
+    }
+    return { claimedCount, failedCount, sweptCount };
+  } finally {
+    await disconnect();
+  }
+}
+
 if (require.main === module) {
-  startWorker().catch(error => {
-    console.error('Could not start ReviewClock worker:', error);
+  const once = process.argv.includes('--once');
+  const run = once ? runWorkerOnce : startWorker;
+  run().catch(error => {
+    console.error(`Could not ${once ? 'complete one-shot' : 'start continuous'} ReviewClock background worker:`, error);
     process.exitCode = 1;
   });
 }
 
-module.exports = { processDelivery, processNextDelivery, sweepStalledPullRequests, startWorker };
+module.exports = { processDelivery, processNextDelivery, sweepStalledPullRequests, startWorker, runWorkerOnce };
