@@ -15,6 +15,7 @@ async function request(path, options = {}) {
   const abortFromCaller = () => controller.abort();
   options.signal?.addEventListener('abort', abortFromCaller, { once: true });
   const timer = setTimeout(() => controller.abort(), 12000);
+  const method = options.method || 'GET';
   try {
     const response = await fetch(`${API_BASE}${path}`, {
       ...options, signal: controller.signal,
@@ -26,19 +27,22 @@ async function request(path, options = {}) {
       : null;
     if (!response.ok) {
       const detail = body?.error || body?.message;
-      const message = detail || (response.status === 401
+      const message = response.status >= 500
+        ? `Server error (${response.status}) for ${method} ${path}${detail ? `: ${detail}` : ''}`
+        : detail || (response.status === 401
         ? 'Authentication required. Please sign in and try again.'
         : response.status === 404
-          ? `API route not found: ${options.method || 'GET'} ${path}. Check that the configured backend URL points to the ReviewClock API.`
+          ? `API route not found: ${method} ${path}. Check that the configured backend URL points to the ReviewClock API.`
           : `Request to ${path} failed (${response.status})`);
       throw new ApiError(message, response.status);
     }
     return body;
   } catch (error) {
     if (options.signal?.aborted) throw error;
-    if (error.name === 'AbortError') throw new ApiError('The request timed out. Please try again.');
+    if (error.name === 'AbortError') throw new ApiError(`Request timed out: ${method} ${path} exceeded 12 seconds.`);
     if (error instanceof ApiError) throw error;
-    throw new ApiError('Could not reach ReviewClock. Check your connection and try again.');
+    const cause = error?.message ? ` (${error.message})` : '';
+    throw new ApiError(`Network request failed before receiving an HTTP response: ${method} ${path}${cause}. Check the configured API URL, backend reachability, TLS, and browser CORS.`);
   } finally { clearTimeout(timer); options.signal?.removeEventListener('abort', abortFromCaller); }
 }
 const unwrap = value => value?.data ?? value;
